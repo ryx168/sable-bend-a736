@@ -61,10 +61,15 @@ export async function onRequestPost({ request, env }) {
     }
     if (!bytes || bytes.length < 64) return json({ error: 'Speech came back empty.', lang }, 502);
 
+    // MeloTTS hands back WAV some days and MP3 others; label what actually arrived.
+    const riff = bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46;
+    const ogg = bytes[0] === 0x4f && bytes[1] === 0x67 && bytes[2] === 0x67 && bytes[3] === 0x53;
+    const type = riff ? 'audio/wav' : ogg ? 'audio/ogg' : 'audio/mpeg';
+
     return new Response(bytes, {
         status: 200,
         headers: {
-            'Content-Type': 'audio/mpeg',
+            'Content-Type': type,
             'Cache-Control': 'no-store',
             'X-Voice-Lang': lang,
             'Access-Control-Allow-Origin': '*',

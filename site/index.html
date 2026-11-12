@@ -209,7 +209,7 @@
     }
     if (rms > thr) silenceMs = 0; else silenceMs += ms;
     const dur = Date.now() - turnStart;
-    if ((silenceMs >= 900 && dur >= 500) || dur >= 60000) finishTurn();
+    if ((silenceMs >= 1000 && dur >= 500) || dur >= 60000) finishTurn();
   }
 
   function finishTurn() {
