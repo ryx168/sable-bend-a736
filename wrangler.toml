@@ -1,0 +1,13 @@
+# Cloudflare Pages project. The call screen lives in site/, the three speech
+# endpoints in functions/api/ (Pages Functions, compiled by `wrangler pages deploy`).
+#
+# Everything runs on the Workers AI binding below: whisper for hearing, llama
+# for thinking, melotts / aura for speaking. No API keys, no account rotation,
+# no KV. The binding is attached by the deploy itself, so the only secrets the
+# workflow needs are the two that name the account and let it publish.
+name = "sable-bend-a736"
+compatibility_date = "2026-08-01"
+pages_build_output_dir = "site"
+
+[ai]
+binding = "AI"

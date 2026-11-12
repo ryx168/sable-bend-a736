@@ -1,0 +1,83 @@
+name: deploy
+
+# Every push to main publishes the call screen and its three speech endpoints
+# to the Cloudflare Pages project named in wrangler.toml. The runner creates
+# the project if it is new, uploads site/ + functions/, and proves the result
+# answers before the run goes green.
+#
+# Repository secrets this needs:
+#   CLOUDFLARE_API_TOKEN      Pages: Edit on the account below
+#   CLOUDFLARE_ACCOUNT_ID     the account that owns the Pages project
+#
+# The Workers AI binding comes from wrangler.toml, so there are no model keys.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: read the project name from wrangler.toml
+        id: cfg
+        run: echo "project=$(sed -n 's/^name *= *"\(.*\)"/\1/p' wrangler.toml | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: syntax-check the functions and the page script
+        run: |
+          set -e
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "CLOUDFLARE_API_TOKEN secret is not set"; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "CLOUDFLARE_ACCOUNT_ID secret is not set"; exit 1; }
+          for f in functions/api/*.js; do cp "$f" /tmp/check.mjs && node --check /tmp/check.mjs; done
+          node -e "
+            const h=require('fs').readFileSync('site/index.html','utf8');
+            const m=h.match(/<script>([\s\S]*?)<\/script>/); if(!m) throw new Error('no inline script');
+            new Function(m[1]); console.log('page script parses');"
+
+      - name: create the Pages project if it is new
+        run: |
+          npx --yes wrangler@4 pages project create "${{ steps.cfg.outputs.project }}" --production-branch main 2>&1 \
+            | tee /tmp/create.log || true
+          grep -qiE "already exists|Successfully created" /tmp/create.log
+
+      - name: deploy
+        run: npx --yes wrangler@4 pages deploy site --project-name "${{ steps.cfg.outputs.project }}" --branch main --commit-dirty=true 2>&1 | tee /tmp/deploy.log
+
+      - name: smoke test the deployment
+        run: |
+          set -e
+          URL="https://${{ steps.cfg.outputs.project }}.pages.dev"
+          sleep 20
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/")
+          echo "GET / -> $code"; test "$code" = 200
+          # A bad body must be refused by each function itself (400): that proves
+          # the function is routed and its imports resolve. 404/500 means it is not.
+          for ep in stt chat tts; do
+            code=$(curl -s -o /tmp/$ep.json -w '%{http_code}' -X POST "$URL/api/$ep" -H 'Content-Type: application/json' -d '{}')
+            echo "POST /api/$ep {} -> $code"; cat /tmp/$ep.json; echo; test "$code" = 400
+          done
+          # One real turn through the model and the English voice, so a missing
+          # AI binding fails the run instead of the first caller.
+          code=$(curl -s -o /tmp/chat.json -w '%{http_code}' -X POST "$URL/api/chat" -H 'Content-Type: application/json' \
+            -d '{"messages":[{"role":"user","content":"Say hello in five words."}],"lang":"en"}')
+          echo "POST /api/chat real -> $code"; cat /tmp/chat.json; echo; test "$code" = 200
+          code=$(curl -s -o /tmp/tts.mp3 -w '%{http_code}' -X POST "$URL/api/tts" -H 'Content-Type: application/json' -d '{"text":"Hello there.","lang":"en"}')
+          echo "POST /api/tts real -> $code ($(stat -c %s /tmp/tts.mp3) bytes)"; test "$code" = 200
+          test "$(stat -c %s /tmp/tts.mp3)" -gt 1000
