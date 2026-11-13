@@ -2,7 +2,8 @@
  * POST /api/tts  { text, lang?: 'zh'|'en'|'auto' }
  *   -> audio/mpeg bytes
  *
- * English goes to Deepgram Aura (natural, paced for conversation). Chinese
+ * English goes to Deepgram Aura 2 in the speaker the caller picked (`voice`),
+ * Aura 1 if Aura 2 is having a bad day. Chinese
  * goes to MeloTTS, the one Workers AI voice that speaks it. MeloTTS answers
  * either raw MP3 or `{audio: <base64>}` depending on the day, so both shapes
  * are turned into bytes here. The page falls back to the browser's own
@@ -11,9 +12,22 @@
  */
 import { bad, json, looksChinese, pickLang, preflight, readJson, requireAI } from './_common.js';
 
-const EN_MODEL = '@cf/deepgram/aura-1';
+const EN_MODEL = '@cf/deepgram/aura-2-en';
+const EN_FALLBACK = '@cf/deepgram/aura-1';
 const ZH_MODEL = '@cf/myshell-ai/melotts';
 const MAX_CHARS = 1200;
+export const DEFAULT_VOICE = 'luna';
+
+/* Every speaker Aura 2 knows; the page offers a curated dozen of these. */
+const AURA2 = new Set(['amalthea','andromeda','apollo','arcas','aries','asteria','athena','atlas','aurora','callista','cora','cordelia','delia','draco','electra','harmonia','helena','hera','hermes','hyperion','iris','janus','juno','jupiter','luna','mars','minerva','neptune','odysseus','ophelia','orion','orpheus','pandora','phoebe','pluto','saturn','thalia','theia','vesta','zeus']);
+const AURA1 = new Set(['angus','asteria','arcas','orion','orpheus','athena','luna','zeus','perseus','helios','hera','stella']);
+
+/* The caller's voice if Aura 2 has it, else the default. Chinese ignores it:
+ * MeloTTS has one voice. */
+export function pickVoice(raw) {
+    const v = String(raw || '').toLowerCase().trim();
+    return AURA2.has(v) ? v : DEFAULT_VOICE;
+}
 
 export async function onRequestOptions() {
     return preflight();
@@ -48,13 +62,19 @@ export async function onRequestPost({ request, env }) {
 
     let lang = pickLang(body.lang);
     if (lang === 'auto') lang = looksChinese(text) ? 'zh' : 'en';
+    const voice = pickVoice(body.voice);
 
     let bytes;
     try {
         if (lang === 'zh') {
             bytes = await toBytes(await ai.run(ZH_MODEL, { prompt: text, lang: 'zh' }));
         } else {
-            bytes = await toBytes(await ai.run(EN_MODEL, { text, speaker: 'luna' }));
+            try {
+                bytes = await toBytes(await ai.run(EN_MODEL, { text, speaker: voice }));
+            } catch (e) {
+                // Aura 2 down: Aura 1 with the same name when it has it, else its own luna.
+                bytes = await toBytes(await ai.run(EN_FALLBACK, { text, speaker: AURA1.has(voice) ? voice : 'luna' }));
+            }
         }
     } catch (e) {
         return json({ error: 'Speech failed: ' + (e && e.message ? e.message : String(e)), lang }, 502);
@@ -72,8 +92,9 @@ export async function onRequestPost({ request, env }) {
             'Content-Type': type,
             'Cache-Control': 'no-store',
             'X-Voice-Lang': lang,
+            'X-Voice': lang === 'zh' ? 'melotts' : voice,
             'Access-Control-Allow-Origin': '*',
-            'Access-Control-Expose-Headers': 'X-Voice-Lang',
+            'Access-Control-Expose-Headers': 'X-Voice-Lang, X-Voice',
         },
     });
 }

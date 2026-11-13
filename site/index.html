@@ -24,6 +24,9 @@
   .brand{display:flex;align-items:center;gap:10px;font-weight:600;letter-spacing:.2px}
   .brand .dot{width:22px;height:22px;border-radius:50%;background:conic-gradient(from 200deg,var(--accent),var(--accent2),var(--accent))}
   .brand small{color:var(--mute);font-weight:400;margin-left:4px}
+  .picks{display:flex;gap:8px;min-width:0;flex:1;justify-content:flex-end}
+  .picks select{width:min(31vw,180px);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  @media (max-width:480px){.brand small{display:none}.brand{gap:8px}}
   select{appearance:none;background:var(--bg2);color:var(--fg);border:1px solid var(--line);border-radius:999px;padding:7px 30px 7px 12px;font:inherit;font-size:14px;
     background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%239aa3b8' stroke-width='1.6' fill='none'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 11px center}
 
@@ -87,11 +90,31 @@
 <body data-state="idle">
 <header>
   <div class="brand"><span class="dot"></span>Muse <small>Voice</small></div>
-  <select id="lang" aria-label="language">
-    <option value="auto">自動 / Auto</option>
-    <option value="zh">中文</option>
-    <option value="en">English</option>
-  </select>
+  <div class="picks">
+    <select id="voice" aria-label="voice" title="English voice · 中文固定用 MeloTTS">
+      <optgroup label="女聲 · Female">
+        <option value="luna">Luna · friendly</option>
+        <option value="thalia">Thalia · clear</option>
+        <option value="helena">Helena · warm</option>
+        <option value="aurora">Aurora · cheerful</option>
+        <option value="pandora">Pandora · British</option>
+        <option value="theia">Theia · Australian</option>
+      </optgroup>
+      <optgroup label="男聲 · Male">
+        <option value="apollo">Apollo · confident</option>
+        <option value="arcas">Arcas · smooth</option>
+        <option value="orion">Orion · approachable</option>
+        <option value="draco">Draco · British</option>
+        <option value="hyperion">Hyperion · Australian</option>
+        <option value="zeus">Zeus · deep</option>
+      </optgroup>
+    </select>
+    <select id="lang" aria-label="language">
+      <option value="auto">自動 / Auto</option>
+      <option value="zh">中文</option>
+      <option value="en">English</option>
+    </select>
+  </div>
 </header>
 
 <main>
@@ -132,7 +155,7 @@
   const $ = (id) => document.getElementById(id);
   const body = document.body, orbWrap = $('orbWrap'), orb = $('orb'), statusEl = $('status'), timerEl = $('timer'),
         log = $('log'), callBtn = $('callBtn'), muteBtn = $('muteBtn'), kbBtn = $('kbBtn'),
-        typeRow = $('typeRow'), typeIn = $('typeIn'), sendBtn = $('sendBtn'), langSel = $('lang');
+        typeRow = $('typeRow'), typeIn = $('typeIn'), sendBtn = $('sendBtn'), langSel = $('lang'), voiceSel = $('voice');
 
   const T = {
     zh: { idle:'按下綠色按鈕開始通話', connecting:'連線中…', listening:'我在聽…', thinking:'想一下…', speaking:'正在說話 · 點圓球打斷', ended:'通話結束', muted:'已靜音', noMic:'沒有麥克風權限，改用打字吧。', heard:'聽到了', hi:'你好，我是 Muse。今天想做點什麼？', offline:'連不上伺服器' },
@@ -142,6 +165,23 @@
 
   try { langSel.value = localStorage.getItem('muse-lang') || 'auto'; } catch {}
   langSel.onchange = () => { try { localStorage.setItem('muse-lang', langSel.value); } catch {} if (state === 'idle') setStatus(ui().idle); };
+
+  // The English voice: ?voice=name in the link wins, then what was picked last time, then Luna.
+  const qsVoice = (new URLSearchParams(location.search).get('voice') || '').toLowerCase();
+  const voiceOk = (v) => !!v && !![...voiceSel.options].find((o) => o.value === v);
+  let savedVoice = ''; try { savedVoice = localStorage.getItem('muse-voice') || ''; } catch {}
+  voiceSel.value = voiceOk(qsVoice) ? qsVoice : voiceOk(savedVoice) ? savedVoice : 'luna';
+  const voice = () => voiceSel.value;
+  const PREVIEW = { luna:"Hi, I'm Luna. This is how I sound on a call.", thalia:"Hi, I'm Thalia. Clear and to the point.", helena:"Hello, I'm Helena. I'll keep you company.", aurora:"Hey! I'm Aurora. Let's make something good tonight.", pandora:"Hello, I'm Pandora. Calm, and quite British.", theia:"Hi there, I'm Theia, calling from down under.", apollo:"Hi, I'm Apollo. Confident, and here to help.", arcas:"Hello, I'm Arcas. Smooth and easy.", orion:"Hey, I'm Orion. Just talk to me like a friend.", draco:"Good evening, I'm Draco. How may I help?", hyperion:"G'day, I'm Hyperion. What are we up to?", zeus:"I'm Zeus. Ask me anything." };
+  voiceSel.onchange = async () => {
+    try { localStorage.setItem('muse-voice', voice()); } catch {}
+    if (state !== 'idle' && state !== 'ended') return;   // mid-call the next reply simply uses it
+    unlockAudio();
+    const ac = new AbortController(); currentAbort = ac; turnSeq++;
+    setState('speaking', voiceSel.options[voiceSel.selectedIndex].text);
+    await speak(PREVIEW[voice()] || "Hi, this is my voice.", 'en', ac.signal);
+    if (state === 'speaking') setState('idle');
+  };
 
   // ---- state -----------------------------------------------------------
   let state = 'idle';
@@ -286,7 +326,7 @@
   async function speak(text, lang, signal) {
     setState('speaking');
     try {
-      const r = await post('/api/tts', { text, lang }, signal);
+      const r = await post('/api/tts', { text, lang, voice: voice() }, signal);
       if (!r.ok) throw new Error('tts ' + r.status);
       const blob = await r.blob();
       if (signal.aborted) return;
@@ -374,7 +414,7 @@
 
   setStatus(ui().idle);
   // expose for the smoke test
-  window.__muse = { get state() { return state; }, get history() { return history; }, runTurn, startCall, endCall };
+  window.__muse = { get state() { return state; }, get history() { return history; }, get voice() { return voice(); }, runTurn, startCall, endCall };
 })();
 </script>
 </body>
